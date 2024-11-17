@@ -18,12 +18,8 @@ pub enum ContentType {
         hints: Option<String>,
         href: Option<String>,
     },
-    Image {
-        path: String,
-    },
-    Img {
-        path: String,
-    },
+    Image(String),
+    Img(String),
 }
 
 pub struct Page {
@@ -44,9 +40,9 @@ impl Page {
         let string_path = root_path.to_str().unwrap().to_string();
 
         if node.tag_name().name() == "img" {
-            ContentType::Img { path: string_path }
+            ContentType::Img(string_path)
         } else {
-            ContentType::Image { path: string_path }
+            ContentType::Image(string_path)
         }
     }
 
@@ -66,7 +62,6 @@ impl Page {
         })
     }
 
-    // FIXME not working
     fn parse_a(node: Node, path: &Path) -> Option<ContentType> {
         let href = node.attribute("href").unwrap();
 
@@ -77,7 +72,21 @@ impl Page {
         let re = Regex::new(r"#.*$").unwrap();
         let link = re.replace_all(&string_path, "").into_owned();
 
-        let text = node.text().unwrap_or_default().replace("\n", "");
+        fn get_text(node: Node) -> String {
+            let mut text = "".to_string();
+
+            if node.has_children() {
+                for i in node.children() {
+                    text += get_text(i).as_str();
+                }
+            } else if node.is_text() {
+                text += node.text().unwrap();
+            }
+
+            text
+        }
+
+        let text = get_text(node).replace("\n", "").trim().to_string();
         (!text.is_empty()).then_some(ContentType::Text {
             text,
             style: TextStyle::Underline,
@@ -205,8 +214,8 @@ impl Page {
                         print!("[{}]({})", text, href.clone().unwrap())
                     }
                 }
-                ContentType::Image { path } => println!("[Image]({})", path),
-                ContentType::Img { path } => println!("[Img]({})", path),
+                ContentType::Image(path) => println!("[Image]({})", path),
+                ContentType::Img(path) => println!("[Img]({})", path),
                 ContentType::LineBreak => println!(),
             }
         }

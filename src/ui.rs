@@ -1,3 +1,5 @@
+use std::borrow::BorrowMut;
+
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
@@ -5,32 +7,47 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap},
     Frame,
 };
-use ratatui_image::{picker::Picker, StatefulImage};
+use ratatui_image::{
+    thread::{ThreadImage, ThreadProtocol},
+    Resize,
+};
 use tui_scrollview::ScrollView;
 
 use crate::{
-    app::{App, CurrentScreen},
+    app::{App, Screen},
     models::page::{ContentType, TextStyle},
 };
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
     match app.current_screen {
-        CurrentScreen::Info { .. } => render_info(frame, app),
-        CurrentScreen::Reading { .. } => render_reading(frame, app),
+        Screen::Info { .. } => render_info(frame, app),
+        Screen::Reading { .. } => render_reading(frame, app),
     }
 }
 
 fn render_info(frame: &mut Frame, app: &mut App) {
+    let instruction = match &app.current_screen {
+        Screen::Info { prev_screen, .. } if prev_screen.is_none() => {
+            "[Up/Down ► Navigate] [Enter ► Start Reading] [Q ► Quit]"
+        }
+        Screen::Info { .. } => {
+            "[Esc ► Return] [Up/Down ► Navigate] [Enter ► Start Reading] [Q ► Quit]"
+        }
+        _ => unreachable!(),
+    };
+    let instructions = Paragraph::new(instruction)
+        .style(Style::default().light_yellow())
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .block(Block::new().padding(Padding::horizontal(2)));
+    let instructions_line = instructions.line_count(frame.area().width) as u16;
     let instruction_chunk = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(100),
-            Constraint::Length(1), // Instructions
+            Constraint::Length(instructions_line),
         ])
         .split(frame.area());
-    let instructions = Paragraph::new("[Up/Down ► Navigate] [Enter ► Start Reading] [Q ► Quit]")
-        .style(Style::default().light_yellow())
-        .alignment(Alignment::Center);
     frame.render_widget(instructions, instruction_chunk[1]);
 
     let main_block = Block::default()
@@ -81,7 +98,7 @@ fn render_info(frame: &mut Frame, app: &mut App) {
         .highlight_style(Style::default().bg(Color::LightCyan).fg(Color::Black))
         .highlight_symbol(" ► ");
 
-    if let CurrentScreen::Info { toc_state } = &mut app.current_screen {
+    if let Screen::Info { toc_state, .. } = &mut app.current_screen {
         frame.render_stateful_widget(toc, right_chunks[1], toc_state);
     } else {
         frame.render_widget(toc, right_chunks[1]);
@@ -89,19 +106,40 @@ fn render_info(frame: &mut Frame, app: &mut App) {
 
     // Render Cover
     if app.book.cover.is_some() {
-        let dyn_img = app
-            .book
-            .images
-            .get_mut(&app.book.cover.clone().unwrap())
-            .unwrap()
-            .get();
+        let Screen::Info {
+            cover_state,
+            toc_state,
+            prev_screen,
+        } = &mut app.current_screen
+        else {
+            unreachable!()
+        };
 
-        let mut picker = Picker::from_query_stdio().unwrap();
-        let mut protocol = picker.new_resize_protocol(dyn_img.clone());
+        if cover_state.is_none() {
+            let dyn_img = app
+                .book
+                .images
+                .get_mut(&app.book.cover.clone().unwrap())
+                .unwrap()
+                .get();
 
-        let image = StatefulImage::new(None);
+            app.current_screen = Screen::Info {
+                cover_state: Some(ThreadProtocol::new(
+                    app.tx_worker.clone(),
+                    app.picker.new_resize_protocol(dyn_img.clone()),
+                )),
+                toc_state: toc_state.clone(),
+                prev_screen: prev_screen.clone(),
+            };
+        } else {
+            let image = ThreadImage::default().resize(Resize::Fit(None));
 
-        frame.render_stateful_widget(image, chunks[0], &mut protocol);
+            frame.render_stateful_widget(
+                image,
+                chunks[0],
+                cover_state.as_mut().unwrap().borrow_mut(),
+            );
+        }
     } else {
         let block_widget = Block::default().borders(Borders::ALL);
         let block_content_area = block_widget.inner(chunks[0]);
@@ -117,32 +155,35 @@ fn render_info(frame: &mut Frame, app: &mut App) {
             height: block_content_area.height.saturating_sub(vertical_padding),
         };
 
-        // Render the centered paragraph inside the adjusted area
         frame.render_widget(centered_paragraph, centered_area);
     }
 }
 
 fn render_reading(frame: &mut Frame, app: &mut App) {
-    let mut page = None;
-    let mut state = None;
-    if let CurrentScreen::Reading {
-        page: path,
-        content_state,
+    let Screen::Reading {
+        page,
+        content_state: state,
     } = &mut app.current_screen
-    {
-        page = app.book.pages.get(path);
-        state = Some(content_state)
-    }
-    let page = page.unwrap();
-    let state = state.unwrap();
+    else {
+        unreachable!()
+    };
+    let page = app.book.pages.get(page).unwrap();
 
+    let instructions = Paragraph::new(
+        "[I ► Book Info] [Up/Down ► Scroll] [Left/Right ► Navigate Between Chapters] [Q ► Quit]",
+    )
+    .style(Style::default().light_yellow())
+    .alignment(Alignment::Center)
+    .wrap(Wrap { trim: true })
+    .block(Block::new().padding(Padding::horizontal(2)));
+    let instructions_line = instructions.line_count(frame.area().width) as u16;
     let instruction_chunk = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(100), Constraint::Length(1)])
+        .constraints([
+            Constraint::Percentage(100),
+            Constraint::Length(instructions_line),
+        ])
         .split(frame.area());
-    let instructions = Paragraph::new("[Up/Down ► Navigate] [Q ► Quit]")
-        .style(Style::default().light_yellow())
-        .alignment(Alignment::Center);
     frame.render_widget(instructions, instruction_chunk[1]);
 
     let main_block = Block::default()
@@ -167,13 +208,24 @@ fn render_reading(frame: &mut Frame, app: &mut App) {
                 }
                 content.push(Span::styled(text, style_));
             }
-            ContentType::Image { path } => content.push(Span::raw(format!("[Image]({})", path))),
-            ContentType::Img { path } => content.push(Span::raw(format!("[Img]({})", path))),
+            ContentType::Image(path) => {
+                if !content.is_empty() {
+                    lines.push(Line::from(content.clone()));
+                    content.clear();
+                }
+
+                lines.push(Line::from(format!("[Image]({})", path)));
+            }
+            ContentType::Img(path) => content.push(Span::raw(format!("[Img]({})", path))),
             ContentType::LineBreak => {
                 lines.push(Line::from(content.clone()));
                 content.clear();
             }
         }
+    }
+
+    if !content.is_empty() {
+        lines.push(Line::from(content));
     }
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
