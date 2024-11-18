@@ -15,7 +15,7 @@ impl Image {
 
     pub fn get(&mut self) -> &DynamicImage {
         if self.parsed.is_none() {
-            self.parsed = Some(load_from_memory(&*self.content).unwrap());
+            self.parsed = Some(load_from_memory(&self.content).unwrap());
         }
 
         self.parsed.as_ref().unwrap()

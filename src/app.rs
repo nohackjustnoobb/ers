@@ -73,7 +73,7 @@ impl App {
         thread::spawn(move || -> Result<(), std::io::Error> {
             loop {
                 if ratatui::crossterm::event::poll(Duration::from_millis(1000)).unwrap() {
-                    if let Event::Key(key) = event::read()? {
+                    if let Event::Key(key) = event::read().unwrap() {
                         tx_main.send(AppEvent::KeyEvent(key)).unwrap();
                     }
                 }
@@ -142,7 +142,11 @@ impl App {
                         };
                     }
                     KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                        if toc_state.selected().is_none() && !self.book.toc.is_empty() {
+                        if self.book.toc.is_empty() {
+                            return;
+                        }
+
+                        if toc_state.selected().is_none() {
                             toc_state.select(Some(self.book.toc.len() - 1));
                         } else if toc_state.selected().unwrap() > 0 {
                             toc_state.select(Some(toc_state.selected().unwrap() - 1));
@@ -151,7 +155,11 @@ impl App {
                         }
                     }
                     KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                        if toc_state.selected().is_none() && !self.book.toc.is_empty() {
+                        if self.book.toc.is_empty() {
+                            return;
+                        }
+
+                        if toc_state.selected().is_none() {
                             toc_state.select(Some(0));
                         } else if toc_state.selected().unwrap() < (self.book.toc.len() - 1) {
                             toc_state.select(Some(toc_state.selected().unwrap() + 1));
