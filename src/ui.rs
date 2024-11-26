@@ -1,21 +1,16 @@
-use std::borrow::BorrowMut;
-
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect, Size},
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap},
     Frame,
-};
-use ratatui_image::{
-    thread::{ThreadImage, ThreadProtocol},
-    Resize,
 };
 use tui_scrollview::ScrollView;
 
 use crate::{
     app::{App, Screen},
     models::page::{ContentType, TextStyle},
+    widgets::custom_thread_image::{ThreadImage, ThreadProtocol},
 };
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
@@ -106,39 +101,21 @@ fn render_info(frame: &mut Frame, app: &mut App) {
 
     // Render Cover
     if app.book.cover.is_some() {
-        let Screen::Info {
-            cover_state,
-            toc_state,
-            prev_screen,
-        } = &mut app.current_screen
-        else {
-            unreachable!()
-        };
-
+        let cover_path = app.book.cover.clone().unwrap();
+        let cover_state = app.image_state.get_mut(&cover_path);
         if cover_state.is_none() {
-            let dyn_img = app
-                .book
-                .images
-                .get_mut(&app.book.cover.clone().unwrap())
-                .unwrap()
-                .get();
+            let dyn_img = app.book.images.get_mut(&cover_path).unwrap().get();
 
-            app.current_screen = Screen::Info {
-                cover_state: Some(ThreadProtocol::new(
+            app.image_state.insert(
+                cover_path,
+                ThreadProtocol::new(
                     app.tx_worker.clone(),
                     app.picker.new_resize_protocol(dyn_img.clone()),
-                )),
-                toc_state: toc_state.clone(),
-                prev_screen: prev_screen.clone(),
-            };
-        } else {
-            let image = ThreadImage::default().resize(Resize::Fit(None));
-
-            frame.render_stateful_widget(
-                image,
-                chunks[0],
-                cover_state.as_mut().unwrap().borrow_mut(),
+                ),
             );
+        } else {
+            let image = ThreadImage::new(cover_path);
+            frame.render_stateful_widget(image, chunks[0], cover_state.unwrap());
         }
     } else {
         let block_widget = Block::default().borders(Borders::ALL);
@@ -157,6 +134,11 @@ fn render_info(frame: &mut Frame, app: &mut App) {
 
         frame.render_widget(centered_paragraph, centered_area);
     }
+}
+
+enum WidgetType<'a> {
+    Paragraph(Paragraph<'a>, u16),
+    Image(String, u16),
 }
 
 fn render_reading(frame: &mut Frame, app: &mut App) {
@@ -196,6 +178,21 @@ fn render_reading(frame: &mut Frame, app: &mut App) {
 
     let mut lines = vec![];
     let mut content = vec![];
+    let mut widgets: Vec<WidgetType> = vec![];
+
+    let content_size_width = inner_area.width - 2;
+    let mut total_height = 0;
+
+    macro_rules! push_paragraph {
+        ($text:expr) => {{
+            let paragraph = Paragraph::new($text).wrap(Wrap { trim: true });
+
+            let line_count = paragraph.line_count(content_size_width);
+            total_height += line_count;
+            widgets.push(WidgetType::Paragraph(paragraph, line_count as u16));
+        }};
+    }
+
     for i in &page.content {
         match i {
             ContentType::Text { text, style, .. } => {
@@ -208,15 +205,19 @@ fn render_reading(frame: &mut Frame, app: &mut App) {
                 }
                 content.push(Span::styled(text, style_));
             }
-            ContentType::Image(path) => {
+            ContentType::Image(path) | ContentType::Img(path) => {
                 if !content.is_empty() {
                     lines.push(Line::from(content.clone()));
                     content.clear();
                 }
 
-                lines.push(Line::from(format!("[Image]({})", path)));
+                if !lines.is_empty() {
+                    push_paragraph!(lines.clone());
+                    lines.clear();
+                }
+
+                push_paragraph!(format!("[Image]({})", path));
             }
-            ContentType::Img(path) => content.push(Span::raw(format!("[Img]({})", path))),
             ContentType::LineBreak => {
                 lines.push(Line::from(content.clone()));
                 content.clear();
@@ -228,15 +229,26 @@ fn render_reading(frame: &mut Frame, app: &mut App) {
         lines.push(Line::from(content));
     }
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    if !lines.is_empty() {
+        push_paragraph!(lines);
+    }
 
-    let mut content_size = inner_area.as_size();
-    content_size.width -= 2;
-    content_size.height = paragraph.line_count(content_size.width) as u16;
-    let mut scroll_view: ScrollView = ScrollView::new(content_size);
-    scroll_view.render_widget(
-        paragraph,
-        Rect::new(0, 0, content_size.width, content_size.height),
-    );
+    let mut scroll_view: ScrollView =
+        ScrollView::new(Size::new(content_size_width, total_height as u16));
+
+    let mut reduce_height = 0;
+    for widget in widgets {
+        match widget {
+            WidgetType::Paragraph(paragraph, height) => {
+                scroll_view.render_widget(
+                    paragraph,
+                    Rect::new(0, reduce_height, content_size_width, height as u16),
+                );
+                reduce_height += height;
+            }
+            WidgetType::Image(..) => (),
+        }
+    }
+
     frame.render_stateful_widget(scroll_view, inner_area, state);
 }

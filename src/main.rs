@@ -1,6 +1,7 @@
 mod app;
 mod models;
 mod ui;
+mod widgets;
 
 use app::App;
 use std::env;

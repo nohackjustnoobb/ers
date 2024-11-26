@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::Duration,
@@ -11,10 +12,10 @@ use ratatui::{
     widgets::ListState,
     Terminal,
 };
-use ratatui_image::{picker::Picker, protocol::StatefulProtocol, thread::ThreadProtocol, Resize};
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol, Resize};
 use tui_scrollview::ScrollViewState;
 
-use crate::{models::book::Book, ui::ui};
+use crate::{models::book::Book, ui::ui, widgets::custom_thread_image::ThreadProtocol};
 
 #[derive(Clone)]
 pub struct ReadingRecord {
@@ -25,7 +26,6 @@ pub struct ReadingRecord {
 pub enum Screen {
     Info {
         toc_state: ListState,
-        cover_state: Option<ThreadProtocol>,
         prev_screen: Option<ReadingRecord>,
     },
     Reading {
@@ -36,14 +36,15 @@ pub enum Screen {
 
 enum AppEvent {
     KeyEvent(KeyEvent),
-    Redraw(StatefulProtocol),
+    Redraw(String, StatefulProtocol),
 }
 
 pub struct App {
     pub book: Book,
     pub current_screen: Screen,
-    pub tx_worker: Sender<(StatefulProtocol, Resize, Rect)>,
     pub picker: Picker,
+    pub image_state: HashMap<String, ThreadProtocol>,
+    pub tx_worker: Sender<(String, StatefulProtocol, Resize, Rect)>,
     exit: bool,
     rec_main: Receiver<AppEvent>,
 }
@@ -59,14 +60,14 @@ impl App {
     pub fn new(path: &str) -> App {
         let picker = Picker::from_query_stdio().unwrap();
 
-        let (tx_worker, rec_worker) = mpsc::channel::<(StatefulProtocol, Resize, Rect)>();
+        let (tx_worker, rec_worker) = mpsc::channel::<(String, StatefulProtocol, Resize, Rect)>();
         let (tx_main, rec_main) = mpsc::channel();
 
         let tx_main_render = tx_main.clone();
         thread::spawn(move || loop {
-            if let Ok((mut protocol, resize, area)) = rec_worker.recv() {
+            if let Ok((id, mut protocol, resize, area)) = rec_worker.recv() {
                 protocol.resize_encode(&resize, None, area);
-                tx_main_render.send(AppEvent::Redraw(protocol)).unwrap();
+                tx_main_render.send(AppEvent::Redraw(id, protocol)).unwrap();
             }
         });
 
@@ -85,12 +86,12 @@ impl App {
             exit: false,
             current_screen: Screen::Info {
                 toc_state: ListState::default(),
-                cover_state: None,
                 prev_screen: None,
             },
             tx_worker,
             rec_main,
             picker,
+            image_state: HashMap::new(),
         }
     }
 
@@ -101,14 +102,13 @@ impl App {
         }
 
         match result.unwrap() {
-            AppEvent::Redraw(proto) => match &mut self.current_screen {
-                Screen::Info { cover_state, .. } => {
-                    if cover_state.is_some() {
-                        cover_state.as_mut().unwrap().set_protocol(proto);
-                    }
+            AppEvent::Redraw(id, proto) => {
+                let state = self.image_state.get_mut(&id);
+
+                if state.is_some() {
+                    state.unwrap().set_protocol(proto);
                 }
-                _ => (),
-            },
+            }
             AppEvent::KeyEvent(key) => {
                 if key.kind == KeyEventKind::Press {
                     self.handle_keypress(key.code);
@@ -186,7 +186,6 @@ impl App {
                     KeyCode::Char('i') | KeyCode::Char('I') => {
                         self.current_screen = Screen::Info {
                             toc_state: ListState::default(),
-                            cover_state: None,
                             prev_screen: Some(ReadingRecord {
                                 page: page.clone(),
                                 offset: content_state.offset(),
