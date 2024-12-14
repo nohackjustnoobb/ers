@@ -1,11 +1,11 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect, Size},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap},
     Frame,
 };
-use tui_scrollview::ScrollView;
+use ratatui_image::{CropOptions, Resize};
 
 use crate::{
     app::{App, Screen},
@@ -137,16 +137,12 @@ fn render_info(frame: &mut Frame, app: &mut App) {
 }
 
 enum WidgetType<'a> {
-    Paragraph(Paragraph<'a>, u16),
-    Image(String, u16),
+    Paragraph(Paragraph<'a>),
+    Image(String),
 }
 
 fn render_reading(frame: &mut Frame, app: &mut App) {
-    let Screen::Reading {
-        page,
-        content_state: state,
-    } = &mut app.current_screen
-    else {
+    let Screen::Reading { page, offset } = &mut app.current_screen else {
         unreachable!()
     };
     let page = app.book.pages.get(page).unwrap();
@@ -180,16 +176,17 @@ fn render_reading(frame: &mut Frame, app: &mut App) {
     let mut content = vec![];
     let mut widgets: Vec<WidgetType> = vec![];
 
-    let content_size_width = inner_area.width - 2;
-    let mut total_height = 0;
+    let mut heights: Vec<usize> = vec![];
+    let mut total_height: usize = 0;
 
     macro_rules! push_paragraph {
         ($text:expr) => {{
             let paragraph = Paragraph::new($text).wrap(Wrap { trim: true });
 
-            let line_count = paragraph.line_count(content_size_width);
+            let line_count = paragraph.line_count(inner_area.width);
             total_height += line_count;
-            widgets.push(WidgetType::Paragraph(paragraph, line_count as u16));
+            heights.push(line_count);
+            widgets.push(WidgetType::Paragraph(paragraph));
         }};
     }
 
@@ -216,7 +213,9 @@ fn render_reading(frame: &mut Frame, app: &mut App) {
                     lines.clear();
                 }
 
-                push_paragraph!(format!("[Image]({})", path));
+                total_height += inner_area.height as usize;
+                heights.push(inner_area.height as usize);
+                widgets.push(WidgetType::Image(path.clone()));
             }
             ContentType::LineBreak => {
                 lines.push(Line::from(content.clone()));
@@ -233,22 +232,86 @@ fn render_reading(frame: &mut Frame, app: &mut App) {
         push_paragraph!(lines);
     }
 
-    let mut scroll_view: ScrollView =
-        ScrollView::new(Size::new(content_size_width, total_height as u16));
-
-    let mut reduce_height = 0;
-    for widget in widgets {
-        match widget {
-            WidgetType::Paragraph(paragraph, height) => {
-                scroll_view.render_widget(
-                    paragraph,
-                    Rect::new(0, reduce_height, content_size_width, height as u16),
-                );
-                reduce_height += height;
-            }
-            WidgetType::Image(..) => (),
-        }
+    // Clamp the offset to make sure it does not exceed the total height of the content
+    if total_height > inner_area.height as usize {
+        *offset = (*offset).min(total_height - inner_area.height as usize);
+    } else {
+        *offset = 0;
     }
 
-    frame.render_stateful_widget(scroll_view, inner_area, state);
+    let mut reduce_height = 0;
+    let mut current_widget = 0;
+
+    let Rect { x, y, height, .. } = inner_area;
+    let base_x = x as usize;
+    let base_y = y as usize;
+    let base_height = height as usize;
+
+    while reduce_height < *offset + base_height && current_widget < heights.len() {
+        let height = *heights.get(current_widget).unwrap();
+        let mut visible_bottom = false;
+
+        if reduce_height + height > *offset {
+            let (y, widget_height, scroll_offset) = if reduce_height < *offset {
+                // Partially visible at the top
+                let visible_height = (height - (*offset - reduce_height)).min(base_height);
+                (base_y, visible_height, *offset - reduce_height)
+            } else if reduce_height + height > *offset + base_height {
+                // Partially visible at the bottom
+                let visible_height = *offset + base_height - reduce_height;
+                visible_bottom = true;
+                (base_y + reduce_height - *offset, visible_height, 0)
+            } else {
+                // Fully visible
+                (base_y + reduce_height - *offset, height, 0)
+            };
+            let rect = Rect {
+                x: base_x as u16,
+                y: y as u16,
+                height: widget_height as u16,
+                ..inner_area
+            };
+
+            match &widgets[current_widget] {
+                WidgetType::Paragraph(paragraph) => {
+                    frame.render_widget(paragraph.clone().scroll((scroll_offset as u16, 0)), rect);
+                }
+                WidgetType::Image(path) => {
+                    let state = app.image_state.get_mut(path);
+
+                    if state.is_some() {
+                        let thr_img = ThreadImage::new(path.clone()).resize(Resize::Crop(Some(
+                            CropOptions {
+                                clip_left: false,
+                                clip_top: !visible_bottom,
+                            },
+                        )));
+                        let img = app.book.images.get(path).unwrap();
+
+                        frame.render_stateful_widget(
+                            thr_img,
+                            Rect {
+                                x: (rect.width / 2 - img.cal_width(height)).max(rect.x),
+                                ..rect
+                            },
+                            state.unwrap(),
+                        );
+                    } else {
+                        let dyn_img = app.book.images.get_mut(path).unwrap().get();
+
+                        app.image_state.insert(
+                            path.clone(),
+                            ThreadProtocol::new(
+                                app.tx_worker.clone(),
+                                app.picker.new_resize_protocol(dyn_img.clone()),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
+        reduce_height += height;
+        current_widget += 1;
+    }
 }

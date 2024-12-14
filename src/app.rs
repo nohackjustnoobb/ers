@@ -6,21 +6,15 @@ use std::{
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::{
-    backend::Backend,
-    layout::{Position, Rect},
-    widgets::ListState,
-    Terminal,
-};
+use ratatui::{backend::Backend, layout::Rect, widgets::ListState, Terminal};
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, Resize};
-use tui_scrollview::ScrollViewState;
 
 use crate::{models::book::Book, ui::ui, widgets::custom_thread_image::ThreadProtocol};
 
 #[derive(Clone)]
 pub struct ReadingRecord {
     page: String,
-    offset: Position,
+    offset: usize,
 }
 
 pub enum Screen {
@@ -30,7 +24,7 @@ pub enum Screen {
     },
     Reading {
         page: String,
-        content_state: ScrollViewState,
+        offset: usize,
     },
 }
 
@@ -98,6 +92,7 @@ impl App {
     fn handle_event(&mut self) {
         let result = self.rec_main.try_recv();
         if result.is_err() {
+            thread::sleep(Duration::from_millis(50));
             return;
         }
 
@@ -138,7 +133,7 @@ impl App {
                                     .0
                                     .clone()
                             },
-                            content_state: ScrollViewState::new(),
+                            offset: 0,
                         };
                     }
                     KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
@@ -173,30 +168,29 @@ impl App {
 
                             self.current_screen = Screen::Reading {
                                 page: prev_screen.page.clone(),
-                                content_state: ScrollViewState::with_offset(prev_screen.offset),
+                                offset: prev_screen.offset,
                             }
                         }
                     }
                     _ => (),
                 },
-                Screen::Reading {
-                    page,
-                    content_state,
-                } => match code {
+                Screen::Reading { page, offset } => match code {
                     KeyCode::Char('i') | KeyCode::Char('I') => {
                         self.current_screen = Screen::Info {
                             toc_state: ListState::default(),
                             prev_screen: Some(ReadingRecord {
                                 page: page.clone(),
-                                offset: content_state.offset(),
+                                offset: offset.clone(),
                             }),
                         }
                     }
                     KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                        content_state.scroll_up();
+                        if *offset >= 1 {
+                            *offset -= 1;
+                        }
                     }
                     KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                        content_state.scroll_down();
+                        *offset += 1;
                     }
                     KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
                         let current_index = self.book.order.iter().position(|x| x == page).unwrap();
@@ -204,7 +198,7 @@ impl App {
                         if current_index > 0 {
                             self.current_screen = Screen::Reading {
                                 page: self.book.order.get(current_index - 1).unwrap().to_string(),
-                                content_state: ScrollViewState::new(),
+                                offset: 0,
                             };
                         }
                     }
@@ -214,7 +208,7 @@ impl App {
                         if current_index < self.book.order.len() - 1 {
                             self.current_screen = Screen::Reading {
                                 page: self.book.order.get(current_index + 1).unwrap().to_string(),
-                                content_state: ScrollViewState::new(),
+                                offset: 0,
                             };
                         }
                     }
