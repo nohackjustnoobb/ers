@@ -114,7 +114,7 @@ impl EpubDoc {
         let manifest = content_opf
             .descendants()
             .find(|n| n.has_tag_name("manifest"))
-            .expect("Atleast one manifest");
+            .expect("At least one manifest");
         for ele in manifest.children() {
             if ele.is_element() {
                 let key = ele.attribute("id").unwrap().to_string();

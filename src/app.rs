@@ -9,7 +9,14 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{backend::Backend, layout::Rect, widgets::ListState, Terminal};
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, Resize};
 
-use crate::{models::book::Book, ui::ui, widgets::custom_thread_image::ThreadProtocol};
+use crate::{
+    models::{
+        book::Book,
+        reading_position::{calculate_book_hash, ReadingPosition},
+    },
+    ui::ui,
+    widgets::custom_thread_image::ThreadProtocol,
+};
 
 #[derive(Clone)]
 pub struct ReadingRecord {
@@ -41,6 +48,7 @@ pub struct App {
     pub tx_worker: Sender<(String, StatefulProtocol, Resize, Rect)>,
     exit: bool,
     rec_main: Receiver<AppEvent>,
+    book_hash: String,
 }
 
 impl App {
@@ -49,6 +57,7 @@ impl App {
             terminal.draw(|f| ui(f, self)).unwrap();
             self.handle_event();
         }
+        self.save_reading_position();
     }
 
     pub fn new(path: &str) -> App {
@@ -75,17 +84,38 @@ impl App {
             }
         });
 
-        App {
-            book: Book::new(path),
-            exit: false,
-            current_screen: Screen::Info {
+        let book = Book::new(path);
+        let book_hash = calculate_book_hash(path).expect("A valid book hash");
+
+        let current_screen = if let Ok(Some(position)) = ReadingPosition::load(&book_hash) {
+            Screen::Reading {
+                page: position.page,
+                offset: position.offset,
+            }
+        } else {
+            Screen::Info {
                 toc_state: ListState::default(),
                 prev_screen: None,
-            },
+            }
+        };
+
+        App {
+            book,
+            exit: false,
+            current_screen,
             tx_worker,
             rec_main,
             picker,
             image_state: HashMap::new(),
+            book_hash,
+        }
+    }
+
+    fn save_reading_position(&self) {
+        if let Screen::Reading { page, offset } = &self.current_screen {
+            ReadingPosition::new(page.clone(), *offset)
+                .save(&self.book_hash)
+                .expect("Save reading position");
         }
     }
 

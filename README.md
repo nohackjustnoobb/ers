@@ -2,6 +2,12 @@
 
 `ers` is a Rust-based, command-line EPUB reader that allows you to read EPUB files right from your terminal.
 
+## Features
+
+- 📚 Read EPUB files directly in your terminal
+- 🖼️ Basic image support for compatible terminals
+- 📖 Reading history tracking
+
 ## Installation
 
 1. Clone the Repository
